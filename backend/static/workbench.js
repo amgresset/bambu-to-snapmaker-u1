@@ -202,7 +202,7 @@ function render(statusText, statusKind) {
         <div class="route">${esc(a.app)} · <b>${esc(a.printer)}</b> → <b>Snapmaker U1</b>${r ? ` · ${esc(r.diff.report.reference_profile)}` : ''}</div>
       </div>
       <div class="actions">${dl}</div>
-      <div class="status ${statusKind || ''}" id="status">${esc(statusText || '')}</div>
+      ${statusText ? `<div class="status ${statusKind || ''}" id="status">${esc(statusText)}</div>` : ''}
     </section>
     <section><h2>Filaments · ${a.filaments.length}</h2><div class="spools">${spools}</div>
       <p class="small">Profile names and temperatures are the designer's. Pick your own filament profiles in Orca; that replaces them per slot.</p></section>
@@ -236,7 +236,7 @@ async function runConvert() {
   render('Converting ' + current.file.name + '…');
   try {
     current.result = await convert(current.file, profileId);
-    render('Converted. Download it and open it in Snapmaker Orca.', 'ok');
+    render();
   } catch (e) {
     render(`Couldn't convert ${current.file.name}: ${e.message || e}`, 'err');
   }
