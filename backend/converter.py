@@ -684,6 +684,149 @@ def _normalise_filament_arrays(
 
 
 # ---------------------------------------------------------------------------
+# Bambu Studio 2.4 compatibility helpers
+
+
+def _clean_nil_value(value: str | None) -> tuple[str | None, bool]:
+    """Bambu Studio 2.4 saves per-object overrides in a two-nozzle form such
+    as ``"50,nil"``.  Snapmaker Orca (Bambu Studio 2.3 based) rejects these
+    with "Deserializing nil into a non-nullable object" and refuses to load
+    the whole project.  Keep the first real value; ``None`` = drop the key.
+    """
+    if value is None or not re.search(r"(^|,)\s*nil\s*(,|$)", value):
+        return value, False
+    parts = [p.strip() for p in value.split(",") if p.strip() and p.strip() != "nil"]
+    return (parts[0] if parts else None), True
+
+
+def _remap_paint_string(code: str, remap: dict[int, int]) -> str:
+    """Rewrite one ``paint_color`` TriangleSelector string through ``remap``.
+
+    The string is a reversed hex-nibble tree.  Leaf nibbles carry the state in
+    their upper two bits (state 3+ uses an extra nibble holding state-3).
+    State 0 = the part's own filament; state N = filament N (1-based).
+    """
+    nibbles = [int(ch, 16) for ch in reversed(code)]
+    out: list[int] = []
+    i = 0
+    while i < len(nibbles):
+        n = nibbles[i]
+        if n & 3:  # split node
+            out.append(n)
+            i += 1
+            continue
+        state = n >> 2
+        if state == 3:
+            i += 1
+            state = nibbles[i] + 3
+        if state:
+            tgt = remap.get(state - 1, state - 1)
+            state = (tgt if tgt >= 0 else 0) + 1
+        if state < 3:
+            out.append(state << 2)
+        else:
+            out.extend([12, state - 3])
+        i += 1
+    return "".join(f"{x:X}" for x in reversed(out))
+
+
+def _remap_paint(model_xml: str, remap: dict[int, int]) -> tuple[str, int]:
+    """Apply the filament slot remap to painted faces, so painted details follow
+    their filament onto its new toolhead (``_rewrite_model_settings`` only
+    covers whole-part assignments)."""
+    if not remap or all(src == tgt for src, tgt in remap.items()):
+        return model_xml, 0
+    count = 0
+
+    def _sub(m: re.Match) -> str:
+        nonlocal count
+        count += 1
+        return f'paint_color="{_remap_paint_string(m.group(1), remap)}"'
+
+    return re.sub(r'paint_color="([0-9A-Fa-f]+)"', _sub, model_xml), count
+
+
+def _area_size(area: list[str]) -> tuple[float, float]:
+    xs, ys = [], []
+    for pt in area:
+        x, y = pt.split("x")
+        xs.append(float(x)); ys.append(float(y))
+    return (max(xs) - min(xs), max(ys) - min(ys)) if xs else (0.0, 0.0)
+
+
+def _plate_offsets(
+    model_settings_xml: str | None,
+    src_area: list[str],
+    ref_area: list[str],
+) -> dict[str, tuple[float, float]]:
+    """Per-object (dx, dy) that moves each plate from the source printer's
+    plate grid onto the U1's.  Bambu lays plates out in a grid of
+    ceil(sqrt(n)) columns, spaced at bed size * 1.2; the U1's 270 mm bed
+    spaces them differently, so without this objects land between plates.
+    """
+    if not model_settings_xml:
+        return {}
+    try:
+        root = ET.fromstring(model_settings_xml)
+    except ET.ParseError:
+        return {}
+    plates = root.findall("plate")
+    if len(plates) < 2:
+        return {}
+    sw, sh = _area_size(src_area)
+    rw, rh = _area_size(ref_area)
+    if not (sw and sh and rw and rh):
+        return {}
+    cols = 1
+    while cols * cols < len(plates):
+        cols += 1
+    offsets: dict[str, tuple[float, float]] = {}
+    for idx, plate in enumerate(plates):
+        c, r = idx % cols, idx // cols
+        dx = c * (rw - sw) * 1.2 + (rw - sw) / 2
+        dy = -r * (rh - sh) * 1.2 + (rh - sh) / 2
+        for inst in plate.findall("model_instance"):
+            for meta in inst.findall("metadata"):
+                if meta.get("key") == "object_id":
+                    offsets[meta.get("value")] = (dx, dy)
+    return offsets
+
+
+def _offset_transform(t: str, d: tuple[float, float]) -> str:
+    vals = t.split()
+    if len(vals) != 12:
+        return t
+    vals[9] = f"{float(vals[9]) + d[0]:.6g}"
+    vals[10] = f"{float(vals[10]) + d[1]:.6g}"
+    return " ".join(vals)
+
+
+def _respace_plates(model_xml: str, offsets: dict[str, tuple[float, float]]) -> tuple[str, int]:
+    if not offsets:
+        return model_xml, 0
+    moved = 0
+
+    def _sub(m: re.Match) -> str:
+        nonlocal moved
+        tag = m.group(0)
+        oid = re.search(r'objectid="(\d+)"', tag)
+        if not oid or oid.group(1) not in offsets:
+            return tag
+        moved += 1
+        return re.sub(
+            r'transform="([^"]+)"',
+            lambda t: f'transform="{_offset_transform(t.group(1), offsets[oid.group(1)])}"',
+            tag,
+        )
+
+    build = re.search(r"<build\b[\s\S]*?</build>", model_xml)
+    if not build:
+        return model_xml, 0
+    new_build = re.sub(r"<item\b[^>]*>", _sub, build.group(0))
+    return model_xml[: build.start()] + new_build + model_xml[build.end():], moved
+
+
+# ---------------------------------------------------------------------------
 # archive writer
 
 
@@ -794,6 +937,23 @@ def _write_output_archive(
             except Exception:
                 pass
 
+        # Bambu Studio 2.4 leaves empty placeholder sub-models; drop them
+        # (and their relationships) so they can't confuse the loader.
+        _empty_models = {
+            n for n in zin.namelist()
+            if n.startswith("3D/Objects/") and n.endswith(".model")
+            and b"<vertex" not in zin.read(n)
+        }
+        _plate_off = (
+            _plate_offsets(
+                zin.read(MODEL_SETTINGS).decode("utf-8") if MODEL_SETTINGS in zin.namelist() else None,
+                _src_area,
+                _ref_area,
+            )
+            if not preserve_bambu_metadata else {}
+        )
+        _paint_total = 0
+
         for item in zin.infolist():
             name = item.filename
 
@@ -811,6 +971,23 @@ def _write_output_archive(
 
             if name == PROJECT_SETTINGS:
                 zout.writestr(name, new_proj_bytes)
+                continue
+
+            if name in _empty_models:
+                diff.record_slice_artifact_stripped(name)
+                continue
+
+            if name == "3D/_rels/3dmodel.model.rels" and _empty_models:
+                rels = zin.read(name).decode("utf-8")
+                for n in _empty_models:
+                    rels = re.sub(r'\s*<Relationship[^>]*Target="/' + re.escape(n) + r'"[^>]*/>', "", rels)
+                zout.writestr(item, rels.encode("utf-8"))
+                continue
+
+            if name.startswith("3D/Objects/") and name.endswith(".model") and not preserve_bambu_metadata:
+                sub_xml, n_paint = _remap_paint(zin.read(name).decode("utf-8"), remap)
+                _paint_total += n_paint
+                zout.writestr(item, sub_xml.encode("utf-8"))
                 continue
 
             if name == MODEL_3D and not preserve_bambu_metadata:
@@ -842,7 +1019,22 @@ def _write_output_archive(
                         )
                     if paint_attrs:
                         log.info("STAGE  prusa-paint: %d mmu_segmentation attrs → paint_color", paint_attrs)
-                shifted_xml, was_shifted = _bed_shift(model_xml, _src_area, _ref_area)
+                # Identify as the Bambu Studio version Snapmaker Orca is built on;
+                # a newer version string makes it treat the project as foreign.
+                model_xml = re.sub(
+                    r'<metadata name="Application">[^<]*</metadata>',
+                    '<metadata name="Application">BambuStudio-2.3.1</metadata>',
+                    model_xml,
+                    count=1,
+                )
+                model_xml, n_paint = _remap_paint(model_xml, remap)
+                _paint_total += n_paint
+                if _plate_off:
+                    shifted_xml, n_moved = _respace_plates(model_xml, _plate_off)
+                    was_shifted = n_moved > 0
+                    log.info("STAGE  plate-respace: %d build items moved onto U1 plate grid", n_moved)
+                else:
+                    shifted_xml, was_shifted = _bed_shift(model_xml, _src_area, _ref_area)
                 zout.writestr(item, shifted_xml.encode("utf-8"))
                 if was_shifted:
                     log.info("STAGE  bed-shift: build items shifted to U1 bed origin")
@@ -852,7 +1044,7 @@ def _write_output_archive(
 
             if name == MODEL_SETTINGS and not preserve_bambu_metadata:
                 modified = _rewrite_model_settings(
-                    zin.read(MODEL_SETTINGS).decode("utf-8"), remap
+                    zin.read(MODEL_SETTINGS).decode("utf-8"), remap, _plate_off
                 )
                 zout.writestr(name, modified)
                 continue
@@ -879,6 +1071,9 @@ def _write_output_archive(
 
             # Everything else copies through verbatim.
             zout.writestr(item, zin.read(name))
+
+        if _paint_total:
+            log.info("STAGE  paint-remap: %d painted faces remapped to new toolheads", _paint_total)
 
         # If source had no project_settings (non-Orca format), write the merged one now.
         with zipfile.ZipFile(source_path, "r") as zin_check:
@@ -913,7 +1108,11 @@ def _is_slice_artifact(name: str) -> bool:
     return any(p.match(name) for p in _SLICE_ARTIFACT_PATTERNS)
 
 
-def _rewrite_model_settings(xml_text: str, remap: dict[int, int]) -> str:
+def _rewrite_model_settings(
+    xml_text: str,
+    remap: dict[int, int],
+    plate_offsets: dict[str, tuple[float, float]] | None = None,
+) -> str:
     """Rewrite per-object ``extruder`` metadata and plate ``filament_maps``.
 
     The remap here is 0-indexed (source_slot -> target_slot). XML stores
@@ -936,6 +1135,24 @@ def _rewrite_model_settings(xml_text: str, remap: dict[int, int]) -> str:
     if len(effective_raft) > 1:
         for m in raft_metas:
             m.set("value", "0")
+
+    # Bambu Studio 2.4 two-nozzle values ("50,nil") — see _clean_nil_value.
+    for parent in list(root.iter()):
+        for meta in [m for m in list(parent) if m.tag == "metadata"]:
+            cleaned, changed = _clean_nil_value(meta.get("value"))
+            if not changed:
+                continue
+            if cleaned is None:
+                parent.remove(meta)
+            else:
+                meta.set("value", cleaned)
+            log.info("STAGE  nil-fix: %s → %s", meta.get("key"), cleaned)
+
+    if plate_offsets:
+        for item in root.iter("assemble_item"):
+            d = plate_offsets.get(item.get("object_id"))
+            if d and item.get("transform"):
+                item.set("transform", _offset_transform(item.get("transform"), d))
 
     for meta in root.iter("metadata"):
         key = meta.get("key")
