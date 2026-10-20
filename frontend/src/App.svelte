@@ -78,7 +78,8 @@
   let sourceSlicer = $state<string | null>(null);
   let paintedSlotMap = $state<Record<number, number>>({});
   let detectedFilaments = $state<Array<{index:number;settings_id:string|null;filament_type:string|null;vendor:string|null;colour:string|null}>>([]);
-  let applyRules = $state(true);
+  let applyRules = $state(false);
+  let clampSpeeds = $state(false);
   let insertSwapPauses = $state(false);
   let showSlotModal = $state(false);
   let advancedOverrides = $state('{}');
@@ -168,11 +169,9 @@
   }
 
   function handleConvert() {
-    if (isPaintedModel && detectedFilaments.length > 4) {
-      showSlotModal = true;
-    } else {
-      runConvert({});
-    }
+    // Every source filament is kept in its own slot; toolhead assignment is
+    // done in Snapmaker Orca (or multiACE) at slice time, so no slot dialog.
+    runConvert({});
   }
 
   async function runConvert(slotMap: Record<number, number>) {
@@ -187,7 +186,7 @@
         file,
         reference_profile: selectedProfile,
         apply_rules: applyRules,
-        clamp_speeds: true,
+        clamp_speeds: clampSpeeds,
         preserve_color_painting: true,
         insert_swap_pauses: insertSwapPauses,
         advanced_overrides: advancedOverrides,
@@ -363,7 +362,7 @@
 
             {#if isMultiplate}
               <div class="warn-banner" role="alert">
-                <strong>Multi-plate project:</strong> this file contains multiple plates. Only the first plate will be automatically positioned on the U1 bed — use Orca's arrange tool for remaining plates after conversion.
+                <strong>Multi-plate project:</strong> this file contains multiple plates. Each plate is moved onto the U1's plate grid, so objects keep their plate and position.
               </div>
             {/if}
 
@@ -410,6 +409,7 @@
                 {profiles}
                 bind:selectedProfile
                 bind:applyRules
+                bind:clampSpeeds
                 bind:insertSwapPauses
                 bind:advancedOverrides
                 autoMatched={profileAutoMatched}

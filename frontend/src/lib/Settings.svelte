@@ -5,6 +5,7 @@
     profiles: ProfileDescriptor[];
     selectedProfile: string;
     applyRules: boolean;
+    clampSpeeds: boolean;
     insertSwapPauses: boolean;
     advancedOverrides: string;
     autoMatched?: boolean;
@@ -15,6 +16,7 @@
     profiles,
     selectedProfile = $bindable(),
     applyRules = $bindable(),
+    clampSpeeds = $bindable(),
     insertSwapPauses = $bindable(),
     advancedOverrides = $bindable(),
     autoMatched = false,
@@ -55,7 +57,16 @@
       <span class="toggle-track"><span class="toggle-thumb"></span></span>
       <span class="toggle-label">
         <span class="toggle-title">Apply filament rules</span>
-        <span class="subtle">Match YAML rules against source filament + tune speeds/accel</span>
+        <span class="subtle">YAML rules overwrite filament temperatures/speeds for the whole project. Off keeps the designer's filament settings — pick your own filament profiles in Orca instead.</span>
+      </span>
+    </label>
+
+    <label class="toggle">
+      <input type="checkbox" bind:checked={clampSpeeds} {disabled} />
+      <span class="toggle-track"><span class="toggle-thumb"></span></span>
+      <span class="toggle-label">
+        <span class="toggle-title">Clamp speeds to the reference profile</span>
+        <span class="subtle">Lower the designer's speeds/accelerations to the U1 reference profile's values. Off keeps the designer's speeds (the U1 handles them).</span>
       </span>
     </label>
 

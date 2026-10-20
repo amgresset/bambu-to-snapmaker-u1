@@ -554,8 +554,8 @@ async def api_suggest_profile(file: UploadFile = File(...)) -> dict[str, Any]:
 async def api_convert(
     file: UploadFile = File(...),
     reference_profile: str = Form(...),
-    apply_rules: bool = Form(True),
-    clamp_speeds: bool = Form(True),
+    apply_rules: bool = Form(False),
+    clamp_speeds: bool = Form(False),
     preserve_color_painting: bool = Form(True),
     advanced_overrides: str = Form("{}"),
     slot_map: str = Form("{}"),
@@ -723,8 +723,8 @@ async def api_convert(
 async def api_convert_bambu(
     file: UploadFile = File(...),
     reference_profile: str = Form(...),
-    apply_rules: bool = Form(True),
-    clamp_speeds: bool = Form(True),
+    apply_rules: bool = Form(False),
+    clamp_speeds: bool = Form(False),
     preserve_color_painting: bool = Form(True),
     advanced_overrides: str = Form("{}"),
     insert_swap_pauses: str = Form("false"),

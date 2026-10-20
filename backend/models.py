@@ -62,6 +62,15 @@ class ClampEvent(BaseModel):
     ceiling: Any
 
 
+class RewriteEvent(BaseModel):
+    """A source value rewritten so Snapmaker Orca can read it (nil fixes, sentinels)."""
+    key: str
+    from_value: Any
+    to_value: Any
+    reason: str
+    scope: str = "project"
+
+
 class RuleMatch(BaseModel):
     rule_name: str
     priority: int
@@ -99,6 +108,7 @@ class DiffReport(BaseModel):
     gcode_swaps: list[GcodeSwapEvent] = Field(default_factory=list)
     keys_dropped: list[KeyDropEvent] = Field(default_factory=list)
     values_clamped: list[ClampEvent] = Field(default_factory=list)
+    settings_rewritten: list[RewriteEvent] = Field(default_factory=list)
     rules_matched: list[RuleMatch] = Field(default_factory=list)
     slot_remaps: list[SlotRemapEvent] = Field(default_factory=list)
 
@@ -114,6 +124,7 @@ class DiffReport(BaseModel):
             "gcode_swaps": len(self.gcode_swaps),
             "keys_dropped": len(self.keys_dropped),
             "values_clamped": len(self.values_clamped),
+            "settings_rewritten": len(self.settings_rewritten),
             "rules_matched": len(self.rules_matched),
             "slot_remaps": len(self.slot_remaps),
             "model_keys_dropped": len(self.model_keys_dropped),

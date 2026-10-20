@@ -14,6 +14,7 @@ from models import (
     GcodeSwapEvent,
     IdentitySwap,
     KeyDropEvent,
+    RewriteEvent,
     RuleMatch,
     SlotRemapEvent,
 )
@@ -52,6 +53,9 @@ class DiffBuilder:
 
     def extend_values_clamped(self, events: list[ClampEvent]) -> None:
         self._report.values_clamped.extend(events)
+
+    def extend_rewrites(self, events: list[RewriteEvent]) -> None:
+        self._report.settings_rewritten.extend(events)
 
     def extend_rules_matched(self, events: list[RuleMatch]) -> None:
         self._report.rules_matched.extend(events)
@@ -134,6 +138,18 @@ def summarise(report: DiffReport) -> list[dict[str, Any]]:
                     f"{len(report.values_clamped)} values reduced to U1 max"
                 ),
                 "details": [e.model_dump() for e in report.values_clamped],
+            }
+        )
+
+    if report.settings_rewritten:
+        sections.append(
+            {
+                "title": "Settings rewritten",
+                "summary": (
+                    f"{len(report.settings_rewritten)} values rewritten so Snapmaker Orca "
+                    "can read them (Bambu 2.4 nil values, auto sentinels)"
+                ),
+                "details": [e.model_dump() for e in report.settings_rewritten],
             }
         )
 

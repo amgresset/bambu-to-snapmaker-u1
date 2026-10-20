@@ -44,7 +44,7 @@ from metadata_helpers import (
     rewrite_slice_info,
     translate_prusa_mmu_paint,
 )
-from models import ConversionSettings, DiffReport, RuleDefinition, SlotRemapEvent
+from models import ConversionSettings, DiffReport, RewriteEvent, RuleDefinition, SlotRemapEvent
 from profile_loader import read_project_settings, read_source_settings
 from rules_engine import FilamentContext, apply_rules
 from swap_pauses import insert_swap_pauses
@@ -252,6 +252,10 @@ def convert(
     # printer's compatible list (e.g. X1C/P1S list on an H2S file).
     if preserve_bambu_metadata and "print_compatible_printers" in reference_cfg:
         merged["print_compatible_printers"] = reference_cfg["print_compatible_printers"]
+    elif not preserve_bambu_metadata and reference_cfg.get("printer_settings_id"):
+        # Tag the embedded process preset as compatible with the U1 printer so
+        # Orca shows it as native instead of "for X1C/P1S".
+        merged["print_compatible_printers"] = [reference_cfg["printer_settings_id"]]
 
     # Clear inherits_group — it names library profiles (print + per-filament)
     # that Orca will load and apply on top of embedded settings, overriding
@@ -269,10 +273,13 @@ def convert(
 
     # 5c. Filament-role slot sentinels: Bambu uses "0" (auto); U1 needs explicit "1".
     n_slot = 0
+    _rewrites: list[RewriteEvent] = []
     for key in _FILAMENT_SLOT_SENTINEL_KEYS:
         if merged.get(key) in ("0", 0):
             merged[key] = "1"
             n_slot += 1
+            _rewrites.append(RewriteEvent(key=key, from_value="0", to_value="1",
+                                          reason="Bambu 'auto' (0) filament slot → explicit slot 1"))
 
     # 5d-pre. Zero line-width sentinels: Bambu uses 0 to mean "derive from nozzle
     # diameter." When the source nozzle differs from the U1's (e.g. 0.2mm → 0.4mm)
@@ -290,6 +297,8 @@ def convert(
                 if float(str(ref_val)) > 0:
                     merged[key] = ref_val
                     n_lw += 1
+                    _rewrites.append(RewriteEvent(key=key, from_value=val, to_value=ref_val,
+                                                  reason="0 line width (derive from nozzle) → U1 reference value"))
         except (TypeError, ValueError):
             pass
     if n_lw:
@@ -302,6 +311,8 @@ def convert(
             if float(str(merged.get(key))) == -1.0 and key in reference_cfg:
                 merged[key] = reference_cfg[key]
                 n_neg += 1
+                _rewrites.append(RewriteEvent(key=key, from_value="-1", to_value=reference_cfg[key],
+                                              reason="Bambu -1 (auto/inherit) → U1 reference value"))
         except (TypeError, ValueError):
             pass
 
@@ -312,6 +323,9 @@ def convert(
         if isinstance(val, str) and val in mapping:
             merged[key] = mapping[val]
             n_enum += 1
+            _rewrites.append(RewriteEvent(key=key, from_value=val, to_value=mapping[val],
+                                          reason="Bambu enum value → Orca enum value"))
+    diff.extend_rewrites(_rewrites)
 
     if n_slot or n_neg or n_enum:
         log.info("STAGE  sentinels: slot=%d neg=%d enum=%d lw=%d", n_slot, n_neg, n_enum, n_lw)
@@ -380,17 +394,13 @@ def convert(
         n_target = n_src
     elif settings.slot_map:
         n_target = _U1_TOOLHEADS_DEFAULT
-    elif _is_painted:
-        # No slot_map: skip was chosen — preserve all source colours so Orca
-        # can handle slot assignment at re-slice time.
-        n_target = n_src
     else:
-        _is_non_orca = "printer_model" not in source_cfg
+        # No slot_map: keep every source filament in its original slot, painted
+        # or not. Toolhead assignment happens in Snapmaker Orca at slice time
+        # (or via multiACE virtual tools T4..T15); silently capping at 4 here
+        # used to drop colours and clamp the rest onto toolhead 1.
         if n_src > 0:
-            # Non-Orca sources (PrusaSlicer, Cura) carry their own filament
-            # arrays — pass them all through; don't cap at the reference slot
-            # count which is tuned for Bambu prints.
-            n_target = n_src if _is_non_orca else min(n_src, n_ref)
+            n_target = n_src
         elif "filament_settings_id" in source_cfg:
             # Orca/Bambu source with an explicit empty filament list.
             n_target = n_ref
@@ -1044,7 +1054,7 @@ def _write_output_archive(
 
             if name == MODEL_SETTINGS and not preserve_bambu_metadata:
                 modified = _rewrite_model_settings(
-                    zin.read(MODEL_SETTINGS).decode("utf-8"), remap, _plate_off
+                    zin.read(MODEL_SETTINGS).decode("utf-8"), remap, _plate_off, diff
                 )
                 zout.writestr(name, modified)
                 continue
@@ -1112,6 +1122,7 @@ def _rewrite_model_settings(
     xml_text: str,
     remap: dict[int, int],
     plate_offsets: dict[str, tuple[float, float]] | None = None,
+    diff: DiffBuilder | None = None,
 ) -> str:
     """Rewrite per-object ``extruder`` metadata and plate ``filament_maps``.
 
@@ -1142,6 +1153,13 @@ def _rewrite_model_settings(
             cleaned, changed = _clean_nil_value(meta.get("value"))
             if not changed:
                 continue
+            if diff is not None:
+                diff.extend_rewrites([RewriteEvent(
+                    key=meta.get("key", ""), from_value=meta.get("value"),
+                    to_value=cleaned if cleaned is not None else "(removed)",
+                    reason="Bambu Studio 2.4 two-nozzle value (X,nil); Orca rejects nil here",
+                    scope=f"{parent.tag} {parent.get('id', '')}".strip(),
+                )])
             if cleaned is None:
                 parent.remove(meta)
             else:

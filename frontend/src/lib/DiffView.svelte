@@ -76,6 +76,9 @@
     {#if counts.values_clamped}
       <span class="pill warn">⇩ {counts.values_clamped} values clamped</span>
     {/if}
+    {#if counts.settings_rewritten}
+      <span class="pill accent">✎ {counts.settings_rewritten} rewritten</span>
+    {/if}
     {#if counts.rules_matched}
       <span class="pill accent">⚙ {counts.rules_matched} rules matched</span>
     {/if}
@@ -156,6 +159,22 @@
                         <td class="mono">{row.key}</td>
                         <td class="from">{formatValue(row.from_value)}</td>
                         <td>{formatValue(row.to_value)}</td>
+                      </tr>
+                    {/each}
+                  </tbody>
+                </table>
+
+              {:else if section.title === 'Settings rewritten'}
+                <table>
+                  <thead><tr><th>Key</th><th>Where</th><th>Was</th><th>Now</th><th>Why</th></tr></thead>
+                  <tbody>
+                    {#each section.details as row}
+                      <tr>
+                        <td class="mono">{row.key}</td>
+                        <td class="muted">{row.scope}</td>
+                        <td class="from">{formatValue(row.from_value)}</td>
+                        <td>{formatValue(row.to_value)}</td>
+                        <td class="muted">{row.reason}</td>
                       </tr>
                     {/each}
                   </tbody>
