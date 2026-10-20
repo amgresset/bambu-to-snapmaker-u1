@@ -957,6 +957,27 @@ def privacy_page() -> HTMLResponse:
     return HTMLResponse(render_privacy_html(path.read_text(encoding="utf-8")))
 
 
+# Workbench UI (plain HTML, backend/static/workbench.html) is the front page;
+# the original Svelte UI stays reachable at /original (its /assets keep working
+# because the dist is still mounted at /).
+WORKBENCH_HTML = Path(__file__).resolve().parent / "static" / "workbench.html"
+
+
+@app.get("/", include_in_schema=False)
+def workbench_page() -> FileResponse:
+    if WORKBENCH_HTML.exists():
+        return FileResponse(WORKBENCH_HTML, media_type="text/html")
+    return FileResponse(FRONTEND_DIST / "index.html", media_type="text/html")
+
+
+@app.get("/original", include_in_schema=False)
+def original_ui() -> FileResponse:
+    return FileResponse(FRONTEND_DIST / "index.html", media_type="text/html")
+
+
+# Workbench page assets (its script + vendored JSZip), same-origin for the CSP.
+app.mount("/static", StaticFiles(directory=str(WORKBENCH_HTML.parent)), name="workbench-static")
+
 # Mount the built frontend last so it doesn't shadow /api routes.
 if FRONTEND_DIST.exists():
     app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")

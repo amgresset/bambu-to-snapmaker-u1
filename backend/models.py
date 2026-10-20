@@ -117,6 +117,8 @@ class DiffReport(BaseModel):
     advanced_overrides_applied: dict[str, Any] = Field(default_factory=dict)
     swap_instructions: list[SwapInstruction] = Field(default_factory=list)
     swap_pauses_skipped_painted: bool = False
+    plates_respaced: int = 0
+    build_items_moved: int = 0
 
     def counts(self) -> dict[str, int]:
         return {

@@ -66,6 +66,10 @@ class DiffBuilder:
     def extend_model_keys_dropped(self, events: list[KeyDropEvent]) -> None:
         self._report.model_keys_dropped.extend(events)
 
+    def record_plate_respace(self, plates: int, items: int) -> None:
+        self._report.plates_respaced = plates
+        self._report.build_items_moved = items
+
     def record_slice_artifact_stripped(self, name: str) -> None:
         self._report.slice_artifacts_stripped.append(name)
 

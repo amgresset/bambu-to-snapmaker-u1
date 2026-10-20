@@ -187,6 +187,9 @@ def convert(
     )
 
     source_cfg, _ = read_source_settings(source_path)
+    _n_variants_collapsed = _collapse_variant_arrays(source_cfg)
+    if _n_variants_collapsed:
+        log.info("STAGE  variant-collapse: %d per-filament arrays reduced from nozzle-variant pairs", _n_variants_collapsed)
     reference_cfg = read_project_settings(reference_path)
 
     with zipfile.ZipFile(source_path) as _znames:
@@ -697,6 +700,38 @@ def _normalise_filament_arrays(
 # Bambu Studio 2.4 compatibility helpers
 
 
+def _collapse_variant_arrays(cfg: dict) -> int:
+    """Bambu Studio 2.4 stores filament settings once per nozzle *variant*
+    (e.g. "Direct Drive Standard" / "Direct Drive High Flow"), so a 7-filament
+    project carries 14-entry arrays laid out [f1v1, f1v2, f2v1, f2v2, ...]
+    (see ``filament_self_index``).  Orca 2.3-style readers index these per
+    filament, so slot 2 would get filament 1's high-flow values.  Keep the
+    first variant of every filament.  Returns the number of arrays reduced.
+    """
+    ids = cfg.get("filament_settings_id")
+    n = len(ids) if isinstance(ids, list) else 0
+    if n <= 0:
+        return 0
+    self_index = cfg.get("filament_self_index")
+    variants = cfg.get("extruder_variant_list")
+    stride = 0
+    if isinstance(self_index, list) and len(self_index) > n and len(self_index) % n == 0:
+        stride = len(self_index) // n
+        # confirm the pair-adjacent layout [1,1,2,2,...]
+        if any(str(self_index[i]) != str(i // stride + 1) for i in range(len(self_index))):
+            stride = 0
+    elif isinstance(variants, list) and variants and isinstance(variants[0], str):
+        stride = len(variants[0].split(","))
+    if stride <= 1:
+        return 0
+    count = 0
+    for key, val in list(cfg.items()):
+        if isinstance(val, list) and len(val) == stride * n and len(val) > n:
+            cfg[key] = [val[i * stride] for i in range(n)]
+            count += 1
+    return count
+
+
 def _clean_nil_value(value: str | None) -> tuple[str | None, bool]:
     """Bambu Studio 2.4 saves per-object overrides in a two-nozzle form such
     as ``"50,nil"``.  Snapmaker Orca (Bambu Studio 2.3 based) rejects these
@@ -1043,6 +1078,7 @@ def _write_output_archive(
                     shifted_xml, n_moved = _respace_plates(model_xml, _plate_off)
                     was_shifted = n_moved > 0
                     log.info("STAGE  plate-respace: %d build items moved onto U1 plate grid", n_moved)
+                    diff.record_plate_respace(len(set(_plate_off.values())), n_moved)
                 else:
                     shifted_xml, was_shifted = _bed_shift(model_xml, _src_area, _ref_area)
                 zout.writestr(item, shifted_xml.encode("utf-8"))
