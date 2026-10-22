@@ -67,6 +67,21 @@ IDENTITY_COPY_KEYS: tuple[str, ...] = (
     "version",
 )
 
+# Printer-preset keys (retraction, z-hop, wipe, extruder offsets, machine
+# limits, cutter distances ...). These describe the U1's hardware, not the
+# designer's intent, so they always come from the reference profile. Kept as
+# data: backend/data/u1_printer_keys.json, the union of keys in Snapmaker
+# Orca's own U1 machine profiles. Leaving a source printer's values in place
+# made Orca reject e.g. an Anycubic project with
+# "retraction_distances_when_cut: 0 not in range [10,18]".
+_PRINTER_KEYS_FILE = Path(__file__).resolve().parent / "data" / "u1_printer_keys.json"
+try:
+    PRINTER_PRESET_KEYS: frozenset[str] = frozenset(
+        json.loads(_PRINTER_KEYS_FILE.read_text(encoding="utf-8"))["keys"]
+    )
+except Exception:  # pragma: no cover - missing data file
+    PRINTER_PRESET_KEYS = frozenset()
+
 # Bambu uses "0" as an auto-sentinel for these filament-role slot keys; U1 Orca
 # requires an explicit 1-based slot number.  Only the sentinel is replaced —
 # any intentional non-zero assignment from the source is preserved.
@@ -351,6 +366,8 @@ def convert(
     log.info("STAGE  vlh: %s", _has_vlh)
     if merged.get("enable_prime_tower") in ("1", 1) and _has_vlh:
         merged["enable_prime_tower"] = "0"
+        diff.extend_rewrites([RewriteEvent(key="enable_prime_tower", from_value="1", to_value="0",
+                                           reason="prime tower conflicts with the project's variable layer height data")])
         log.info("STAGE  prime-tower: disabled — VLH present (layer_config_ranges or layer_heights_profile)")
 
     # 6c. organic supports + per-object VLH → Orca cannot slice; fall back to normal(auto)
@@ -359,6 +376,8 @@ def convert(
     _support_type = merged.get("support_type", "")
     if "tree" in str(_support_type) and _HAS_VLH_PROFILE in _src_names:
         merged["support_type"] = "normal(auto)"
+        diff.extend_rewrites([RewriteEvent(key="support_type", from_value=_support_type, to_value="normal(auto)",
+                                           reason="Orca cannot slice tree supports with the project's per-object variable layer heights")])
         log.info("STAGE  supports: tree→normal(auto) — layer_heights_profile.txt present (VLH conflict)")
 
     # 7. rules engine
@@ -533,7 +552,7 @@ def _apply_identity_swap(
     diff: DiffBuilder,
 ) -> dict[str, Any]:
     merged = dict(source_cfg)
-    for key in IDENTITY_COPY_KEYS:
+    for key in list(IDENTITY_COPY_KEYS) + sorted(PRINTER_PRESET_KEYS - set(IDENTITY_COPY_KEYS)):
         if key not in reference_cfg:
             continue
         old = merged.get(key)
